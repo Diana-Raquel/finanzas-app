@@ -1,7 +1,7 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import html2canvas from "html2canvas";
+import { getEntradas, getSalidas, createEntrada, createSalida } from "./api";
 
 // ─── Colores y estilos globales ───────────────────────────────────────────────
 const STYLES = `
@@ -172,20 +172,12 @@ const STYLES = `
   .export-btn:hover { opacity: .85; }
 `;
 
-// ─── Datos seed ────────────────────────────────────────────────────────────────
-const SEED_IN = [
-  { id:1, tipo:"Sueldo del mes",    monto:500, fecha:"2024-04-05", factura:null },
-  { id:2, tipo:"Cheque de sistema", monto:300, fecha:"2024-04-12", factura:null },
-  { id:3, tipo:"Remesa",            monto:700, fecha:"2024-04-20", factura:null },
-];
-const SEED_OUT = [
-  { id:1, tipo:"Luz",   monto:40,  fecha:"2024-04-06", factura:null },
-  { id:2, tipo:"Gas",   monto:150, fecha:"2024-04-13", factura:null },
-  { id:3, tipo:"Comida",monto:300, fecha:"2024-04-22", factura:null },
-];
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
-const fmt = n => `$${Number(n).toLocaleString()}`;
+const fmt = n => {
+  const num = parseFloat(n) || 0;
+  return `$${num.toLocaleString("es-SV", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
 const today = () => new Date().toISOString().slice(0,10);
 
 function PieChart({ income, expense, canvasRef }) {
@@ -276,10 +268,25 @@ export default function App() {
   const [user, setUser]           = useState("");
   const [loginErr, setLoginErr]   = useState("");
   const [page, setPage]           = useState("dashboard");
-  const [entradas, setEntradas]   = useState(SEED_IN);
-  const [salidas, setSalidas]     = useState(SEED_OUT);
+  const [entradas, setEntradas]   = useState([]);
+  const [salidas, setSalidas]     = useState([]);
   const [success, setSuccess]     = useState("");
   const [imgModal, setImgModal]   = useState(null);
+  const [loading, setLoading]     = useState(false);
+
+  // ── Cargar datos desde la API al hacer login ─────────────────────────────
+  useEffect(() => {
+    if (!loggedIn) return;
+    // Consulta GET /api/entradas — trae todas las entradas de la base de datos
+    getEntradas()
+      .then(data => setEntradas(data))
+      .catch(err => console.error("Error cargando entradas:", err));
+
+    // Consulta GET /api/salidas — trae todas las salidas de la base de datos
+    getSalidas()
+      .then(data => setSalidas(data))
+      .catch(err => console.error("Error cargando salidas:", err));
+  }, [loggedIn]);
 
   // login form
   const [lUser, setLUser] = useState("");
@@ -309,33 +316,53 @@ export default function App() {
     const reader = new FileReader();
     reader.onload = ev => {
       if (which === "entrada")
-        setEForm(f => ({...f, factura: ev.target.result, preview: ev.target.result}));
+        setEForm(f => ({...f, factura: ev.target.result, preview: ev.target.result, facturaFile: file}));
       else
-        setSForm(f => ({...f, factura: ev.target.result, preview: ev.target.result}));
+        setSForm(f => ({...f, factura: ev.target.result, preview: ev.target.result, facturaFile: file}));
     };
     reader.readAsDataURL(file);
   }
 
-  function submitEntrada() {
+  async function submitEntrada() {
     if (!eForm.tipo || !eForm.monto) return;
-    setEntradas(prev => [...prev, { id: prev.length+1, tipo: eForm.tipo, monto: parseFloat(eForm.monto), fecha: eForm.fecha, factura: eForm.factura }]);
-    setEForm({ tipo:"", monto:"", fecha:today(), factura:null, preview:null });
-    setSuccess("Entrada registrada exitosamente.");
-    setTimeout(() => setSuccess(""), 3000);
-    setPage("ver-entradas");
+    setLoading(true);
+    try {
+      // Consulta POST /api/entradas — guarda la entrada en la base de datos
+      const data = await createEntrada(eForm.tipo, eForm.monto, eForm.fecha, eForm.facturaFile);
+      setEntradas(prev => [...prev, data]);
+      setEForm({ tipo:"", monto:"", fecha:today(), factura:null, preview:null, facturaFile:null });
+      setSuccess("✅ Entrada registrada exitosamente.");
+      setTimeout(() => setSuccess(""), 3000);
+      setPage("ver-entradas");
+    } catch (err) {
+      setSuccess("❌ Error al guardar entrada. Verifica que el servidor esté corriendo.");
+      setTimeout(() => setSuccess(""), 4000);
+    } finally {
+      setLoading(false);
+    }
   }
 
-  function submitSalida() {
+  async function submitSalida() {
     if (!sForm.tipo || !sForm.monto) return;
-    setSalidas(prev => [...prev, { id: prev.length+1, tipo: sForm.tipo, monto: parseFloat(sForm.monto), fecha: sForm.fecha, factura: sForm.factura }]);
-    setSForm({ tipo:"", monto:"", fecha:today(), factura:null, preview:null });
-    setSuccess("Salida registrada exitosamente.");
-    setTimeout(() => setSuccess(""), 3000);
-    setPage("ver-salidas");
+    setLoading(true);
+    try {
+      // Consulta POST /api/salidas — guarda la salida en la base de datos
+      const data = await createSalida(sForm.tipo, sForm.monto, sForm.fecha, sForm.facturaFile);
+      setSalidas(prev => [...prev, data]);
+      setSForm({ tipo:"", monto:"", fecha:today(), factura:null, preview:null, facturaFile:null });
+      setSuccess("✅ Salida registrada exitosamente.");
+      setTimeout(() => setSuccess(""), 3000);
+      setPage("ver-salidas");
+    } catch (err) {
+      setSuccess("❌ Error al guardar salida. Verifica que el servidor esté corriendo.");
+      setTimeout(() => setSuccess(""), 4000);
+    } finally {
+      setLoading(false);
+    }
   }
 
-  const totalIn  = entradas.reduce((s,e) => s + e.monto, 0);
-  const totalOut = salidas.reduce((s,e)  => s + e.monto, 0);
+  const totalIn  = entradas.reduce((s,e) => s + parseFloat(e.monto || 0), 0);
+  const totalOut = salidas.reduce((s,e)  => s + parseFloat(e.monto || 0), 0);
   const balance  = totalIn - totalOut;
 
   async function exportPDF() {
@@ -510,8 +537,10 @@ export default function App() {
             </div>
           </div>
           <div className="submit-row">
-            <button className="btn-primary" style={{flex:1}} onClick={submitEntrada}>Guardar Entrada</button>
-            <button className="btn-secondary" onClick={()=>setEForm({tipo:"",monto:"",fecha:today(),factura:null,preview:null})}>
+            <button className="btn-primary" style={{flex:1}} onClick={submitEntrada} disabled={loading}>
+              {loading ? "Guardando..." : "Guardar Entrada"}
+            </button>
+            <button className="btn-secondary" onClick={()=>setEForm({tipo:"",monto:"",fecha:today(),factura:null,preview:null,facturaFile:null})}>
               Limpiar
             </button>
           </div>
@@ -556,8 +585,10 @@ export default function App() {
             </div>
           </div>
           <div className="submit-row">
-            <button className="btn-primary" style={{flex:1}} onClick={submitSalida}>Guardar Salida</button>
-            <button className="btn-secondary" onClick={()=>setSForm({tipo:"",monto:"",fecha:today(),factura:null,preview:null})}>
+            <button className="btn-primary" style={{flex:1}} onClick={submitSalida} disabled={loading}>
+              {loading ? "Guardando..." : "Guardar Salida"}
+            </button>
+            <button className="btn-secondary" onClick={()=>setSForm({tipo:"",monto:"",fecha:today(),factura:null,preview:null,facturaFile:null})}>
               Limpiar
             </button>
           </div>
@@ -587,7 +618,7 @@ export default function App() {
                   <td style={{color:"var(--green)",fontWeight:600}}>{fmt(e.monto)}</td>
                   <td style={{color:"var(--muted)"}}>{e.fecha}</td>
                   <td>{e.factura
-                    ? <img src={e.factura} alt="factura" className="img-thumb" onClick={()=>setImgModal(e.factura)} />
+                    ? <img src={`http://localhost:5000${e.factura}`} alt="factura" className="img-thumb" onClick={()=>setImgModal(`http://localhost:5000${e.factura}`)} />
                     : <span style={{color:"var(--muted)",fontSize:".8rem"}}>Sin imagen</span>}
                   </td>
                 </tr>
@@ -686,7 +717,7 @@ export default function App() {
           <PieChart income={totalIn} expense={totalOut} canvasRef={canvasRef} />
         </div>
 
-        <button className="export-btn" onClick={exportPDF}>⬇ Mostrar Balance</button>
+        <button className="export-btn" onClick={exportPDF}>⬇ Descargar PDF</button>
       </>
     ),
   };
@@ -729,7 +760,7 @@ export default function App() {
             <button className="btn-primary" onClick={handleLogin}>Iniciar Sesión</button>
             {loginErr && <div className="error-msg">{loginErr}</div>}
             <div style={{marginTop:16,color:"var(--muted)",fontSize:".78rem",textAlign:"center"}}>
-              
+              Demo: admin / admin123
             </div>
           </div>
         </div>
